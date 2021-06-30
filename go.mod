@@ -1,4 +1,4 @@
-module github.com/mechta-market/sarama/v1
+module github.com/mechta-market/sarama/v2
 
 go 1.16
 
