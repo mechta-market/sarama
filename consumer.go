@@ -24,7 +24,7 @@ func (s *Sarama) NewConsumerGroup(
 	topics []string,
 	handler func(topic string, offset int64, msg []byte) bool,
 	skipUnread bool,
-) (*ConsumerGroup, error) {
+) (ConsumerGroupInterface, error) {
 	result := &ConsumerGroup{
 		sarama: s,
 	}

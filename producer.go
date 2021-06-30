@@ -18,7 +18,7 @@ func (s *Sarama) NewSyncProducer(
 	clientId string,
 	topic string,
 	ack int, // '0': not wait, '1': wait for write to disk, '-1': wait for saving on all replicas
-) (*SyncProducer, error) {
+) (SyncProducerInterface, error) {
 	result := &SyncProducer{
 		sarama: s,
 	}
