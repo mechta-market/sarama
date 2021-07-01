@@ -3,6 +3,7 @@ package sarama
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"io/ioutil"
 	"sync"
 
@@ -57,6 +58,9 @@ func (s *Sarama) getCommonConfig(clientId string) (*sarama.Config, error) {
 	case "SHA256":
 		result.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient { return &XDGSCRAMClient{HashGeneratorFcn: SHA256} }
 		result.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA256
+	case "":
+	default:
+		fmt.Println("Undefined scram mechanism, must be `SHA512` or `SHA256`")
 	}
 
 	if s.config.TLS {
