@@ -3,6 +3,7 @@ package sarama
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/Shopify/sarama"
 )
@@ -10,19 +11,22 @@ import (
 type ConsumerGroup struct {
 	sarama *Sarama
 
+	stopCh chan int
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	handler func(topic string, offset int64, msg []byte) bool
-
-	offsetCh chan int64
+	msgHandler     func(topic string, offset int64, msg []byte) bool
+	commitHandler  func(topic string) bool
+	commitDuration time.Duration
 }
 
 func (s *Sarama) NewConsumerGroup(
 	clientId string,
 	group string,
 	topics []string,
-	handler func(topic string, offset int64, msg []byte) bool,
+	msgHandler func(topic string, offset int64, msg []byte) bool,
+	commitHandler func(topic string) bool,
+	commitDuration time.Duration,
 	skipUnread bool,
 ) (ConsumerGroupInterface, error) {
 	result := &ConsumerGroup{
@@ -47,9 +51,11 @@ func (s *Sarama) NewConsumerGroup(
 		return nil, err
 	}
 
-	result.handler = handler
+	result.msgHandler = msgHandler
+	result.commitHandler = commitHandler
+	result.commitDuration = commitDuration
 
-	result.offsetCh = make(chan int64, 1)
+	result.stopCh = make(chan int, 1)
 
 	result.ctx, result.cancel = context.WithCancel(context.Background())
 
@@ -74,18 +80,14 @@ func (s *Sarama) NewConsumerGroup(
 	return result, nil
 }
 
-func (o *ConsumerGroup) SetOffset(offset int64) {
-	o.offsetCh <- offset
-}
-
 func (o *ConsumerGroup) Stop() {
 	o.cancel()
-	close(o.offsetCh)
+	close(o.stopCh)
 }
 
 // PRIVATE METHODS FOR INTERFACE:
 
-func (o *ConsumerGroup) Setup(sarama.ConsumerGroupSession) error {
+func (o *ConsumerGroup) Setup(ses sarama.ConsumerGroupSession) error {
 	return nil
 }
 
@@ -94,32 +96,84 @@ func (o *ConsumerGroup) Cleanup(sarama.ConsumerGroupSession) error {
 }
 
 func (o *ConsumerGroup) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
-	var msg *sarama.ConsumerMessage
-	var offset int64
 	var ok bool
+	var msg *sarama.ConsumerMessage
+	var lastMsgCommitted = true
+	var commitTimer *time.Timer
+
+	useTimer := o.commitHandler != nil && o.commitDuration > 0
+
+	if useTimer {
+		commitTimer = time.NewTimer(o.commitDuration)
+	} else {
+		commitTimer = time.NewTimer(time.Minute)
+	}
+
+	commitTimer.Stop() // initial state
+
+	stopAndDrainCommitTimer := func() {
+		commitTimer.Stop()
+
+		for {
+			select {
+			case <-commitTimer.C:
+			default:
+				return
+			}
+		}
+	}
+
+	handleCommitTimout := func() {
+		stopAndDrainCommitTimer()
+
+		if !lastMsgCommitted {
+			if o.commitHandler(msg.Topic) {
+				session.MarkMessage(msg, "")
+				lastMsgCommitted = true
+			} else {
+				commitTimer.Reset(o.commitDuration)
+			}
+		}
+	}
+
+	handleMsg := func() {
+		if o.msgHandler(msg.Topic, msg.Offset, msg.Value) {
+			session.MarkMessage(msg, "")
+			lastMsgCommitted = true
+		} else {
+			lastMsgCommitted = false
+
+			if useTimer {
+				stopAndDrainCommitTimer()
+				commitTimer.Reset(o.commitDuration)
+			}
+		}
+	}
 
 	for {
 		select {
+		case <-o.stopCh:
+			return nil
+		default:
+		}
+
+		select {
+		case <-commitTimer.C:
+			handleCommitTimout()
+		default:
+		}
+
+		select {
+		case <-o.stopCh:
+			return nil
+		case <-commitTimer.C:
+			handleCommitTimout()
 		case msg, ok = <-claim.Messages():
 			if !ok {
 				return nil
 			}
-
 			if msg != nil {
-				if o.handler(msg.Topic, msg.Offset, msg.Value) {
-					session.MarkMessage(msg, "")
-				}
-			}
-		case offset, ok = <-o.offsetCh:
-			if !ok {
-				return nil
-			}
-
-			if offset < claim.HighWaterMarkOffset() {
-				session.ResetOffset(claim.Topic(), claim.Partition(), offset, "")
-				return nil
-			} else {
-				session.MarkOffset(claim.Topic(), claim.Partition(), offset, "")
+				handleMsg()
 			}
 		}
 	}
