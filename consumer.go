@@ -29,7 +29,7 @@ func (s *Sarama) NewConsumerGroup(
 	commitDuration time.Duration,
 	skipUnread bool,
 ) (ConsumerGroupInterface, error) {
-	fmt.Println("NewConsumerGroup:", clientId, group, topics)
+	// fmt.Println("NewConsumerGroup:", clientId, group, topics)
 
 	result := &ConsumerGroup{
 		sarama: s,
