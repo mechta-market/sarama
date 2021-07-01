@@ -29,6 +29,8 @@ type Config struct {
 }
 
 func NewSarama(config Config) *Sarama {
+	fmt.Println("NewSarama config:", config)
+
 	return &Sarama{
 		config: config,
 	}
