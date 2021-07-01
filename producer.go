@@ -17,7 +17,7 @@ type SyncProducer struct {
 func (s *Sarama) NewSyncProducer(
 	clientId string,
 	topic string,
-	ack int, // '0': not wait, '1': wait for write to disk, '-1': wait for saving on all replicas
+	ack AckType,
 ) (SyncProducerInterface, error) {
 	result := &SyncProducer{
 		sarama: s,
@@ -58,4 +58,8 @@ func (o *SyncProducer) SendTopic(topic string, key string, value []byte) error {
 	})
 
 	return err
+}
+
+func (o *SyncProducer) Stop() {
+	_ = o.producer.Close()
 }
