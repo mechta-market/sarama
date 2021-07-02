@@ -64,8 +64,8 @@ func (s *Sarama) NewConsumerGroup(
 	result.sarama.wg.Add(1)
 
 	go func() {
-		defer result.sarama.wg.Done()
 		defer client.Close()
+		defer result.sarama.wg.Done()
 
 		for {
 			err = client.Consume(result.ctx, topics, result)
