@@ -2,6 +2,7 @@ package sarama
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,15 +10,10 @@ import (
 )
 
 type ConsumerGroup struct {
-	sarama *Sarama
-
 	stopCh chan int
-	ctx    context.Context
 	cancel context.CancelFunc
 
-	msgHandler     func(topic string, offset int64, msg []byte) bool
-	commitHandler  func(topic string) bool
-	commitDuration time.Duration
+	msgHandler func(topic string, offset int64, msg []byte) bool
 }
 
 func (s *Sarama) NewConsumerGroup(
@@ -25,21 +21,17 @@ func (s *Sarama) NewConsumerGroup(
 	group string,
 	topics []string,
 	msgHandler func(topic string, offset int64, msg []byte) bool,
-	commitHandler func(topic string) bool,
-	commitDuration time.Duration,
 	skipUnread bool,
+	retryInterval time.Duration,
 ) (ConsumerGroupInterface, error) {
-	// fmt.Println("NewConsumerGroup:", clientId, group, topics)
-
-	result := &ConsumerGroup{
-		sarama: s,
+	cGroup := &ConsumerGroup{
+		msgHandler: msgHandler,
 	}
 
 	cfg, err := s.getCommonConfig(clientId)
 	if err != nil {
 		return nil, err
 	}
-
 	cfg.Consumer.Return.Errors = true
 
 	if skipUnread {
@@ -53,33 +45,32 @@ func (s *Sarama) NewConsumerGroup(
 		return nil, err
 	}
 
-	result.msgHandler = msgHandler
-	result.commitHandler = commitHandler
-	result.commitDuration = commitDuration
+	cGroup.stopCh = make(chan int, 1)
 
-	result.stopCh = make(chan int, 1)
+	var ctx context.Context
 
-	result.ctx, result.cancel = context.WithCancel(context.Background())
+	ctx, cGroup.cancel = context.WithCancel(context.Background())
 
-	result.sarama.wg.Add(1)
+	s.wg.Add(1)
 
 	go func() {
 		defer client.Close()
-		defer result.sarama.wg.Done()
+		defer s.wg.Done()
 
 		for {
-			err = client.Consume(result.ctx, topics, result)
+			err = client.Consume(ctx, topics, cGroup)
 			if err != nil {
 				fmt.Println("Error occurred on consume:", err)
 			}
-
-			if result.ctx.Err() != nil {
+			if ctx.Err() != nil {
 				return
 			}
+
+			time.Sleep(retryInterval)
 		}
 	}()
 
-	return result, nil
+	return cGroup, nil
 }
 
 func (o *ConsumerGroup) Stop() {
@@ -100,82 +91,21 @@ func (o *ConsumerGroup) Cleanup(sarama.ConsumerGroupSession) error {
 func (o *ConsumerGroup) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	var ok bool
 	var msg *sarama.ConsumerMessage
-	var lastMsgCommitted = true
-	var commitTimer *time.Timer
-
-	useTimer := o.commitHandler != nil && o.commitDuration > 0
-
-	if useTimer {
-		commitTimer = time.NewTimer(o.commitDuration)
-	} else {
-		commitTimer = time.NewTimer(time.Minute)
-	}
-
-	commitTimer.Stop() // initial state
-
-	stopAndDrainCommitTimer := func() {
-		commitTimer.Stop()
-
-		for {
-			select {
-			case <-commitTimer.C:
-			default:
-				return
-			}
-		}
-	}
-
-	handleCommitTimout := func() {
-		stopAndDrainCommitTimer()
-
-		if !lastMsgCommitted {
-			if o.commitHandler(msg.Topic) {
-				session.MarkMessage(msg, "")
-				lastMsgCommitted = true
-			} else {
-				commitTimer.Reset(o.commitDuration)
-			}
-		}
-	}
-
-	handleMsg := func() {
-		if o.msgHandler(msg.Topic, msg.Offset, msg.Value) {
-			session.MarkMessage(msg, "")
-			lastMsgCommitted = true
-		} else {
-			lastMsgCommitted = false
-
-			if useTimer {
-				stopAndDrainCommitTimer()
-				commitTimer.Reset(o.commitDuration)
-			}
-		}
-	}
 
 	for {
 		select {
 		case <-o.stopCh:
 			return nil
-		default:
-		}
-
-		select {
-		case <-commitTimer.C:
-			handleCommitTimout()
-		default:
-		}
-
-		select {
-		case <-o.stopCh:
-			return nil
-		case <-commitTimer.C:
-			handleCommitTimout()
 		case msg, ok = <-claim.Messages():
 			if !ok {
 				return nil
 			}
 			if msg != nil {
-				handleMsg()
+				if o.msgHandler(msg.Topic, msg.Offset, msg.Value) {
+					session.MarkMessage(msg, "")
+				} else {
+					return errors.New("fail_to_handle_message")
+				}
 			}
 		}
 	}

@@ -21,9 +21,8 @@ func (s *Sarama) NewSyncProducer(
 ) (SyncProducerInterface, error) {
 	result := &SyncProducer{
 		sarama: s,
+		topic:  topic,
 	}
-
-	result.topic = topic
 
 	cfg, err := s.getCommonConfig(clientId)
 	if err != nil {

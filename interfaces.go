@@ -8,9 +8,8 @@ type Interface interface {
 		group string,
 		topics []string,
 		msgHandler func(topic string, offset int64, msg []byte) bool,
-		commitHandler func(topic string) bool,
-		commitDuration time.Duration,
 		skipUnread bool,
+		retryInterval time.Duration,
 	) (ConsumerGroupInterface, error)
 
 	NewSyncProducer(
